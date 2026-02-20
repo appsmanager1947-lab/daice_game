@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ダイス・ゲーム・ハブ</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;900&display=swap');
+        body { font-family: 'Noto Sans JP', sans-serif; overflow-x: hidden; }
+        .dice-rolling { animation: shake 0.5s infinite; }
+        @keyframes shake {
+            0% { transform: translate(2px, 2px) rotate(0deg); }
+            25% { transform: translate(-2px, -3px) rotate(-2deg); }
+            50% { transform: translate(-4px, 1px) rotate(2deg); }
+            75% { transform: translate(3px, 3px) rotate(-1deg); }
+            100% { transform: translate(2px, -2px) rotate(1deg); }
+        }
+    </style>
+</head>
+<body class="bg-slate-100 text-slate-900">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState } = React;
+
+        const Icon = ({ name, size = 24, className = "" }) => {
+            const icons = {
+                rotate: <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8m0 0V3m0 5h5" />,
+                home: <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z M9 22V12h6v10" />,
+                dice: <rect x="2" y="2" width="20" height="20" rx="5" ry="5" />
+            };
+            return (
+                <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+                    {icons[name] || <circle cx="12" cy="12" r="10" />}
+                </svg>
+            );
+        };
+
+        const App = () => {
+            const [scene, setScene] = useState('menu');
+            const [removedDiceHistory, setRemovedDiceHistory] = useState([]); // ファイブジャックの消去履歴
+            const diceImages = {
+                1: "./dice1.png", 2: "./dice2.png", 3: "./dice3.png",
+                4: "./dice4.png", 5: "./dice5.png", 6: "./dice6.png"
+            };
+
+            const [players, setPlayers] = useState([{ id: 1, name: 'プレイヤー1', score: null }]);
+            const [activeIdx, setActiveIdx] = useState(0);
+            const [dice, setDice] = useState([1, 1, 1]);
+            const [isRolling, setIsRolling] = useState(false);
+            const [currentResult, setCurrentResult] = useState(null);
+
+            // --- 判定ロジック ---
+
+            const evaluateChinchiro = (d) => {
+                const s = [...d].sort();
+                if (s[0] === s[2]) return { name: s[0] === 1 ? 'ピンゾロ' : `${s[0]}ゾロ`, color: 'text-red-600' };
+                if (s[0] === 4 && s[1] === 5 && s[2] === 6) return { name: 'シゴロ', color: 'text-yellow-600 font-bold' };
+                if (s[0] === 1 && s[1] === 2 && s[2] === 3) return { name: 'ヒフミ', color: 'text-blue-600 font-bold' };
+                if (s[0] === s[1]) return { name: `${s[2]}の目`, color: 'text-slate-800' };
+                if (s[1] === s[2]) return { name: `${s[0]}の目`, color: 'text-slate-800' };
+                return { name: '役なし', color: 'text-slate-400' };
+            };
+
+            const evaluateDicePoker = (d) => {
+                const counts = {};
+                d.forEach(x => counts[x] = (counts[x] || 0) + 1);
+                const penta = Object.keys(counts).find(num => counts[num] === 5);
+                const quad = Object.keys(counts).find(num => counts[num] === 4);
+                const trio = Object.keys(counts).find(num => counts[num] === 3);
+                const pairs = Object.keys(counts).filter(num => counts[num] === 2);
+                const sorted = [...d].sort((a, b) => a - b);
+                const high = sorted[4];
+                const isStraight = (Object.keys(counts).length === 5 && (high - sorted[0] === 4));
+
+                if (penta) return { name: `${penta}のファイブカード`, color: "text-red-600 font-black" };
+                if (quad) return { name: `${quad}のフォーカード`, color: "text-orange-600" };
+                if (trio && pairs.length > 0) return { name: `${trio}と${pairs[0]}のフルハウス`, color: "text-purple-600" };
+                if (isStraight) return { name: `${high}のストレート`, color: "text-blue-600" };
+                if (trio) return { name: `${trio}のスリーカード`, color: "text-green-600" };
+                if (pairs.length === 2) return { name: `${pairs[0]}と${pairs[1]}のツーペア`, color: "text-indigo-600" };
+                if (pairs.length === 1) return { name: `${pairs[0]}のワンペア`, color: "text-slate-600" };
+                return { name: `${high}ハイ（役なし）`, color: "text-slate-400" };
+            };
+
+            const evaluateFiveJack = (d) => {
+                let counts = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 };
+                d.forEach(val => counts[val]++);
+                let removed = [];
+
+                // 組み合わせ除去ロジック
+                while(counts[5] > 0) { counts[5]--; removed.push(5); }
+                while(counts[4] >= 1 && counts[1] >= 1) { counts[4]--; counts[1]--; removed.push(4, 1); }
+                while(counts[3] >= 1 && counts[2] >= 1) { counts[3]--; counts[2]--; removed.push(3, 2); }
+                while(counts[3] >= 1 && counts[1] >= 2) { counts[3]--; counts[1]-=2; removed.push(3, 1, 1); }
+                while(counts[2] >= 2 && counts[1] >= 1) { counts[2]-=2; counts[1]--; removed.push(2, 2, 1); }
+                while(counts[2] >= 1 && counts[1] >= 3) { counts[2]--; counts[1]-=3; removed.push(2, 1, 1, 1); }
+                while(counts[1] >= 5) { counts[1]-=5; removed.push(1, 1, 1, 1, 1); }
+
+                let remaining = [];
+                for (let v = 1; v <= 6; v++) { for (let i = 0; i < counts[v]; i++) { remaining.push(v); } }
+
+                const score = remaining.reduce((a, b) => a + b, 0);
+                const isFinished = removed.length === 0;
+
+                return {
+                    remaining,
+                    removedDice: removed,
+                    score,
+                    isFinished,
+                    name: isFinished ? `確定スコア: ${score}` : `残りスコア: ${score}`,
+                    color: isFinished ? "text-slate-900" : "text-amber-600"
+                };
+            };
+
+            const roll = (gameType) => {
+                if (isRolling) return;
+                setIsRolling(true);
+                setCurrentResult(null);
+
+                const diceCount = (gameType === 'five_jack' && currentResult && currentResult.remaining)
+                    ? (currentResult.remaining.length === 0 ? 5 : currentResult.remaining.length)
+                    : (gameType === 'chinchiro' ? 3 : 5);
+
+                let count = 0;
+                const interval = setInterval(() => {
+                    setDice(Array.from({ length: diceCount }, () => Math.floor(Math.random() * 6) + 1));
+                    if (++count > 15) {
+                        clearInterval(interval);
+                        const final = Array.from({ length: diceCount }, () => Math.floor(Math.random() * 6) + 1);
+                        
+                        const res = gameType === 'chinchiro' ? evaluateChinchiro(final) : 
+                                    gameType === 'five_jack' ? evaluateFiveJack(final) : evaluateDicePoker(final);
+                        
+                        setCurrentResult(res);
+
+                        if (gameType === 'five_jack') {
+                            setDice(res.remaining);
+                            setRemovedDiceHistory(prev => [...prev, ...res.removedDice]);
+                        } else {
+                            setDice(final);
+                        }
+
+                        // スコア更新（確定時のみ、またはリアルタイム）
+                        const newPlayers = [...players];
+                        newPlayers[activeIdx].score = res.name;
+                        setPlayers(newPlayers);
+                        setIsRolling(false);
+                    }
+                }, 60);
+            };
+
+            const resetGame = (mode) => {
+                setPlayers([{ id: 1, name: 'プレイヤー1', score: null }]);
+                setActiveIdx(0);
+                setDice(mode === 'chinchiro' ? [1, 1, 1] : [1, 1, 1, 1, 1]);
+                setCurrentResult(null);
+                setRemovedDiceHistory([]);
+            };
+
+            const handRanks = [
+                { name: "ファイブカード", desc: "5個全て同じ" },
+                { name: "フォーカード", desc: "4個同じ" },
+                { name: "フルハウス", desc: "3個＋2個同じ" },
+                { name: "ストレート", desc: "5連番" },
+                { name: "スリーカード", desc: "3個同じ" },
+                { name: "ツーペア", desc: "2個＋2個同じ" },
+                { name: "ワンペア", desc: "2個同じ" },
+                { name: "ハイカード", desc: "役なし" }
+            ];
+
+            if (scene === 'menu') {
+                return (
+                    <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-slate-900 text-white w-full">
+                        <header className="text-center mb-16">
+                            <h1 className="text-6xl font-black italic tracking-tighter uppercase mb-2">Game Hub</h1>
+                            <p className="text-indigo-400 font-bold uppercase tracking-[0.3em] text-xs">Select Your Mode</p>
+                        </header>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-8 w-full max-w-4xl">
+                            <button onClick={() => {setScene('chinchiro'); resetGame('chinchiro');}} className="group bg-slate-800 p-8 rounded-[3rem] border-2 border-slate-700 hover:border-indigo-500 transition-all text-left relative overflow-hidden active:scale-95">
+                                <Icon name="dice" size={40} className="text-indigo-500 mb-4" />
+                                <h2 className="text-3xl font-black italic uppercase tracking-tighter mb-2 text-white">チンチロ</h2>
+                                <p className="text-slate-400 text-sm leading-relaxed">3つのサイコロで役を競う。<br/>日本の伝統的ギャンブル。</p>
+                            </button>
+                            <button onClick={() => {setScene('dice_poker'); resetGame('dice_poker');}} className="group bg-slate-800 p-8 rounded-[3rem] border-2 border-slate-700 hover:border-red-500 transition-all text-left relative overflow-hidden active:scale-95">
+                                <Icon name="dice" size={40} className="text-red-500 mb-4" />
+                                <h2 className="text-3xl font-black italic uppercase tracking-tighter mb-2 text-white">ダイスポーカー</h2>
+                                <p className="text-slate-400 text-sm leading-relaxed">5つのサイコロで役を揃える。<br/>戦略的なポーカー勝負。</p>
+                            </button>
+                            <button onClick={() => {setScene('five_jack'); resetGame('five_jack');}} className="group bg-slate-800 p-8 rounded-[3rem] border-2 border-slate-700 hover:border-amber-500 transition-all text-left relative overflow-hidden active:scale-95">
+                                <Icon name="dice" size={40} className="text-amber-500 mb-4" />
+                                <h2 className="text-3xl font-black italic uppercase tracking-tighter mb-2 text-white">ファイブジャック</h2>
+                                <p className="text-slate-400 text-sm leading-relaxed">5を消していく引き算ゲーム。<br/>最小スコアを目指せ。</p>
+                            </button>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="min-h-screen flex flex-col items-center justify-center p-4 md:p-10 w-full bg-slate-100 relative">
+                    {scene === 'dice_poker' && (
+                        <aside className="fixed right-4 top-24 bg-white/90 shadow-xl rounded-3xl p-5 border border-slate-200 hidden lg:block w-52">
+                            <h3 className="text-xs font-black text-slate-400 mb-4 tracking-widest uppercase">Rank</h3>
+                            <ul className="space-y-2">
+                                {handRanks.map((rank, i) => (
+                                    <li key={i} className="flex flex-col border-b border-slate-100 pb-1">
+                                        <span className="text-[11px] font-black text-slate-700">{rank.name}</span>
+                                        <span className="text-[9px] text-slate-400">{rank.desc}</span>
+                                    </li>
+                                ))}
+                            </ul>
+                        </aside>
+                    )}
+
+                    <main className="w-full max-w-4xl flex flex-col items-center space-y-8">
+                        <div className="w-full flex justify-between items-center max-w-2xl">
+                            <button onClick={() => setScene('menu')} className="flex items-center space-x-2 text-slate-400 hover:text-slate-900 font-bold transition-all uppercase text-sm">
+                                <Icon name="home" size={18} /><span>Menu</span>
+                            </button>
+                            <div className="bg-indigo-600 text-white px-5 py-1.5 rounded-full text-xs font-black shadow-lg">
+                                Turn: {players[activeIdx].name}
+                            </div>
+                        </div>
+
+                        <header className="text-center">
+                            <h1 className="text-5xl md:text-7xl font-black italic tracking-tighter text-slate-800 uppercase">
+                                {scene === 'chinchiro' ? 'チンチロ' : scene === 'five_jack' ? 'ファイブジャック' : 'ダイスポーカー'}
+                            </h1>
+                        </header>
+
+                        {/* 1段目：ファイブジャック消去履歴 */}
+                        {scene === 'five_jack' && removedDiceHistory.length > 0 && (
+                            <div className="flex flex-col items-center w-full max-w-xl animate-in fade-in slide-in-from-top-4">
+                                <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2">Removed Dice</span>
+                                <div className="flex flex-wrap justify-center gap-2 p-4 bg-white/50 border-2 border-dashed border-slate-200 rounded-[2rem]">
+                                    {removedDiceHistory.map((d, i) => (
+                                        <div key={i} className="w-10 h-10 md:w-12 md:h-12 opacity-30 grayscale hover:opacity-100 transition-opacity">
+                                            <img src={diceImages[d]} className="w-full h-full object-contain" alt={d} />
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* 2段目：メインダイス表示 */}
+                        <div className="flex flex-wrap justify-center gap-3 md:gap-6 py-4 min-h-[120px]">
+                            {dice.length > 0 ? dice.map((d, i) => (
+                                <div key={i} className={`${scene === 'chinchiro' ? 'w-24 h-24 md:w-44 md:h-44' : 'w-16 h-16 md:w-32 md:h-32'} bg-white rounded-2xl md:rounded-[2.5rem] shadow-xl flex items-center justify-center overflow-hidden border border-slate-100 ${isRolling ? 'dice-rolling' : 'transition-transform hover:scale-105'}`}>
+                                    <img src={diceImages[d]} className="w-full h-full object-contain p-2 md:p-4" alt={d} onError={(e) => { e.target.style.display='none'; e.target.nextSibling.style.display='block'; }} />
+                                    <span className="hidden text-4xl font-black text-slate-200">{d}</span>
+                                </div>
+                            )) : (
+                                scene === 'five_jack' && !isRolling && <div className="text-slate-300 font-black text-xl italic uppercase tracking-widest animate-pulse">All Dice Removed!</div>
+                            )}
+                        </div>
+
+                        {/* 判定結果 */}
+                        <div className="h-24 flex items-center justify-center">
+                            {currentResult ? (
+                                <div className={`text-4xl md:text-6xl font-black ${currentResult.color} animate-in zoom-in duration-300`}>{currentResult.name}</div>
+                            ) : isRolling ? (
+                                <div className="text-slate-300 text-2xl font-black animate-pulse tracking-[0.5em] uppercase">Rolling</div>
+                            ) : null}
+                        </div>
+
+                        {/* 操作エリア */}
+                        <div className="grid grid-cols-2 gap-4 w-full max-w-lg">
+                            {scene === 'five_jack' ? (
+                                <React.Fragment>
+                                    <button onClick={() => roll('five_jack')} disabled={isRolling || (currentResult && currentResult.isFinished)} className="col-span-2 bg-amber-500 text-white py-6 rounded-[2rem] font-black text-4xl shadow-2xl active:translate-y-1 disabled:opacity-50 transition-all border-b-[12px] border-amber-700/30">
+                                        {isRolling ? 'ROLLING...' : (currentResult && !currentResult.isFinished) ? 'もう一度振る' : '振る'}
+                                    </button>
+                                    {currentResult && currentResult.isFinished && (
+                                        <button onClick={() => { setActiveIdx((activeIdx + 1) % players.length); setCurrentResult(null); setDice([1, 1, 1, 1, 1]); setRemovedDiceHistory([]); }} className="col-span-2 bg-slate-900 text-white py-5 rounded-2xl font-black text-xl hover:bg-slate-800 animate-bounce shadow-xl">
+                                            スコア確定して次へ
+                                        </button>
+                                    )}
+                                </React.Fragment>
+                            ) : (
+                                <button onClick={() => roll(scene)} disabled={isRolling} className={`col-span-2 ${scene === 'chinchiro' ? 'bg-slate-900' : 'bg-red-600'} text-white py-6 rounded-[2rem] font-black text-4xl shadow-2xl active:translate-y-1 disabled:opacity-50 transition-all border-b-[12px] border-black/20`}>ROLL</button>
+                            )}
+                            <button onClick={() => { setActiveIdx((activeIdx + 1) % players.length); setCurrentResult(null); setDice(scene === 'chinchiro' ? [1,1,1] : [1,1,1,1,1]); setRemovedDiceHistory([]); }} className="bg-white border-2 border-slate-200 text-slate-700 py-4 rounded-2xl font-bold hover:bg-slate-50 text-[10px] tracking-widest uppercase">Next</button>
+                            <button onClick={() => setPlayers([...players, {id: Date.now(), name: `Player ${players.length + 1}`, score: null}])} className="bg-white border-2 border-slate-200 text-slate-700 py-4 rounded-2xl font-bold hover:bg-slate-50 text-[10px] tracking-widest uppercase">Add</button>
+                        </div>
+
+                        {/* プレイヤーリスト */}
+                        <div className="w-full max-w-lg space-y-2 pb-10">
+                            {players.map((p, idx) => (
+                                <div key={p.id} className={`flex justify-between items-center p-4 rounded-3xl border-2 transition-all ${idx === activeIdx ? 'border-indigo-500 bg-white shadow-lg' : 'border-transparent bg-slate-200/50 opacity-60'}`}>
+                                    <div className="flex items-center space-x-4">
+                                        <span className={`text-xl font-black ${idx === activeIdx ? 'text-indigo-600' : 'text-slate-400'}`}>{idx + 1}</span>
+                                        <span className="font-bold text-lg">{p.name}</span>
+                                    </div>
+                                    <span className="font-black text-slate-700">{p.score || '-'}</span>
+                                </div>
+                            ))}
+                        </div>
+                    </main>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
